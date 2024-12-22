@@ -26,7 +26,7 @@ for T, start_position in zip(T_list,start_position_list):
 
 n_start_target_pairs = 5
 start_positions, target_positions = Sphere.generate_random_pairs_within_half_injectivity(n_start_target_pairs)
-depth_range = [6,7,8,9,10,11]
+depth_range = [5,6,7,8,9]
 T_range = [np.power(float(depth), -7) for depth in depth_range]
 n_steps = 20
 n_samples_per_depth = 100

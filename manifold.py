@@ -1,5 +1,5 @@
 import torch
-# import signatory
+import signatory
 import roughpy as rp
 import math
 import numpy as np
@@ -74,7 +74,7 @@ class manifold(object):
     distances = []
     for i in range(cart_trajs_all.shape[0]):
       last_step = cart_trajs_all[i,-1]
-      distance = self.Riemannian_distance_on_2sphere(cartesian_to_spherical(*last_step), target_position)
+      distance = self.Riemannian_distance_on_2sphere(self.cartesian_to_spherical(*last_step), target_position)
       distances.append(distance)
     return distances
 
@@ -153,7 +153,7 @@ class manifold(object):
       phi2 = rng.uniform(0, np.pi)
       point2 = np.array([theta2, phi2, self.radius_sphere])
 
-      while Riemannian_distance_on_2sphere(point1, point2) > self.half_injective_sphere:
+      while self.Riemannian_distance_on_2sphere(point1, point2) > self.half_injective_sphere:
         theta2 = rng.uniform(0, 2 * np.pi)
         phi2 = rng.uniform(0, np.pi)
         point2 = np.array([theta2, phi2, self.radius_sphere])
@@ -211,7 +211,7 @@ class manifold(object):
     dt = T / n_steps
 
     spherical_path = [start_position]
-    cartesian_path = [spherical_to_cartesian(*start_position)]
+    cartesian_path = [self.spherical_to_cartesian(*start_position)]
 
     # initial orthonormal basis in the tangent plane attached to the starting point
     H1, H2 = self.initial_orthonormal_basis(*start_position[:-1])
@@ -231,16 +231,16 @@ class manifold(object):
       # rotation angle (step size normalized by the radius)
       angle = np.linalg.norm(tangent_vector) / self.radius_sphere
       # Rodrigues' rotation formula to get the new position on the sphere
-      new_cartesian = rodrigues_rotation(current_cartesian, axis, angle)
+      new_cartesian = self.rodrigues_rotation(current_cartesian, axis, angle)
 
       # update the current position and store it in the path
       cartesian_path.append(new_cartesian)
-      spherical_path.append(cartesian_to_spherical(*new_cartesian))
+      spherical_path.append(self.cartesian_to_spherical(*new_cartesian))
 
       # current_cartesian = new_cartesian
 
-      H1 = rodrigues_rotation(H1, axis, angle)
-      H2 = rodrigues_rotation(H2, axis, angle)
+      H1 = self.rodrigues_rotation(H1, axis, angle)
+      H2 = self.rodrigues_rotation(H2, axis, angle)
 
     return np.array(cartesian_path), np.array(spherical_path)
 
@@ -256,7 +256,7 @@ class manifold(object):
 
 
   def plot_BM_path(self, trajectories:np.array, T:float=1.0, label=False):
-    start_position = np.array(spherical_to_cartesian(*trajectories[0,0]))
+    start_position = np.array(self.spherical_to_cartesian(*trajectories[0,0]))
     start_position_str = np.array2string(start_position, precision=2, separator=',', suppress_small=True)[1:-1]
 
     fig = plt.figure(figsize=(12, 8))
@@ -298,7 +298,7 @@ class manifold(object):
     if not self.is_on_sphere(target_position):
       raise ValueError('Given target position ({0}) is not on this sphere(r={1})'.format(target_position,self.radius_sphere))
 
-    start_targ_distance = Riemannian_distance_on_2sphere(start_position, target_position)
+    start_targ_distance = self.Riemannian_distance_on_2sphere(start_position, target_position)
     if start_targ_distance > self.half_injective_sphere :
       raise ValueError(f"The Riemannian distance between the start and target positions\n\
                         must be less than or equal to {self.half_injective_sphere:.3f}.\n\
@@ -307,10 +307,10 @@ class manifold(object):
     dt = T / n_steps
 
     spherical_path = [start_position]
-    cartesian_path = [spherical_to_cartesian(*start_position)]
+    cartesian_path = [self.spherical_to_cartesian(*start_position)]
 
     target_spherical = target_position
-    target_cartesian = spherical_to_cartesian(*target_position)
+    target_cartesian = self.spherical_to_cartesian(*target_position)
 
     # generate R^2-Brownian motion increments
     dW = rng.normal(scale=np.sqrt(dt), size=(n_steps, 2))
@@ -328,11 +328,11 @@ class manifold(object):
       H_k = dW[k,0]*H1 + dW[k,1]*H2
 
       # calculate Riemannian distance between current position to the target position
-      r_v = Riemannian_distance_on_2sphere(current_spherical, target_spherical)
+      r_v = self.Riemannian_distance_on_2sphere(current_spherical, target_spherical)
 
       # compute gradient of r_v at current point which should be a vector in the tangent space
-      r_v_gradient = - (target_cartesian - current_cartesian * np.dot(current_cartesian, target_cartesian) / radius**2) \
-                        / np.linalg.norm(target_cartesian - current_cartesian * np.dot(current_cartesian, target_cartesian) / radius**2)
+      r_v_gradient = - (target_cartesian - current_cartesian * np.dot(current_cartesian, target_cartesian) / self.radius_sphere**2) \
+                        / np.linalg.norm(target_cartesian - current_cartesian * np.dot(current_cartesian, target_cartesian) / self.radius_sphere**2)
 
       # calculate the guiding drift term
       guiding_drift_k = - (2*r_v*r_v_gradient*dt)/(2*(T-k*dt))
@@ -345,17 +345,17 @@ class manifold(object):
       # else:
       # axis of rotation (orthogonal to current position and tangent vector)
       axis = np.cross(current_cartesian, tangent_vector)
-      angle = np.linalg.norm(tangent_vector) / radius
+      angle = np.linalg.norm(tangent_vector) / self.radius_sphere
       # Rodrigues' rotation formula to get the new position on the sphere
-      new_cartesian = rodrigues_rotation(current_cartesian, axis, angle)
+      new_cartesian = self.rodrigues_rotation(current_cartesian, axis, angle)
 
       # update the current position and store it in the path
       cartesian_path.append(new_cartesian)
-      spherical_path.append(cartesian_to_spherical(*new_cartesian))
+      spherical_path.append(self.cartesian_to_spherical(*new_cartesian))
 
       # update the tangent vectors H1 and H2 to align with the new tangent plane
-      H1 = rodrigues_rotation(H1, axis, angle)
-      H2 = rodrigues_rotation(H2, axis, angle)
+      H1 = self.rodrigues_rotation(H1, axis, angle)
+      H2 = self.rodrigues_rotation(H2, axis, angle)
     return np.array(cartesian_path), np.array(spherical_path)
 
 
@@ -371,8 +371,8 @@ class manifold(object):
 
   def plot_BB_path(self, trajectories:np.array, T:float=0.05, 
                    target_position=np.array([0, np.pi/2, 1.0]), label=False):
-    start_position = np.array(spherical_to_cartesian(*trajectories[0,0]))
-    target_position = np.array(spherical_to_cartesian(*target_position))
+    start_position = np.array(self.spherical_to_cartesian(*trajectories[0,0]))
+    target_position = np.array(self.spherical_to_cartesian(*target_position))
 
     start_position_str = np.array2string(start_position, precision=2, separator=',', suppress_small=True)[1:-1]
     target_position_str = np.array2string(target_position, precision=2, separator=',', suppress_small=True)[1:-1]
@@ -409,13 +409,13 @@ class manifold(object):
 
   @staticmethod
   def get_hyperbolic_pathdev(trajectories:np.ndarray)-> np.ndarray:
-    hyperbolic_pathdev = compute_hyperbolic_pathdev(cart_trajs_all) # N,n_steps,m,m where m=d+1
+    hyperbolic_pathdev = compute_hyperbolic_pathdev(trajectories) # N,n_steps,m,m where m=d+1
     # print(hyperbolic_pathdev.shape)
 
 
   def explore_sensitivity(self, depth_range:list, start_positions:list, target_positions:list,
                           n_steps=10, n_samples_per_depth=10, n_samples_per_depth_stored=1,
-                          rng=np.random.default_rng(1635134), package='signatory')->dict:
+                          rng=np.random.default_rng(1635134), package='roughpy')->dict:
     """
     explore sensitivity to parameter variations: start-target positions pairs and depths (T)
     """
@@ -428,7 +428,7 @@ class manifold(object):
       if not self.is_on_sphere(target_position):
         raise ValueError('Given target position ({0}) is not on this sphere(r={1})'.format(target_position,self.radius_sphere))
 
-      start_targ_distance = Riemannian_distance_on_2sphere(start_position, target_position)
+      start_targ_distance = self.Riemannian_distance_on_2sphere(start_position, target_position)
       if start_targ_distance  > self.half_injective_sphere:
         raise ValueError(f"The Riemannian distance between the start and target positions\n\
                           must be less than or equal to {self.half_injective_sphere:.3f}.\n\
@@ -438,10 +438,11 @@ class manifold(object):
       results[position_key] = {}
 
       for depth in depth_range:
-        T = np.power(float(depth),-7)
-        times = np.linspace(0, T, n_steps+1)[1:]
-        interval = rp.RealInterval(0, T+1)
-        context = rp.get_context(width=3, depth=depth, coeffs=rp.DPReal)
+        if package == 'roughpy':
+          T = np.power(float(depth),-7)
+          times = np.linspace(0, T, n_steps+1)[1:]
+          interval = rp.RealInterval(0, T+1)
+          context = rp.get_context(width=3, depth=depth, coeffs=rp.DPReal)
 
         # run multiple simulations for each parameter combination
         sample_trajectories = []
@@ -450,8 +451,8 @@ class manifold(object):
         slice_len = 3**depth
 
         for sample in range(n_samples_per_depth):
-          cartesian_path, _ = generate_BB_on_2sphere(radius, T=T, n_steps=n_steps,
-                                                                  start_position=start_position, target_position=target_position)
+          cartesian_path, _ = self.generate_BB_on_2sphere(T=T, n_steps=n_steps,
+                                                          start_position=start_position, target_position=target_position)
           all_trajectories.append(cartesian_path)
           if sample % int(np.ceil(n_samples_per_depth/n_samples_per_depth_stored)) == 0:
               sample_trajectories.append(cartesian_path)
@@ -459,8 +460,8 @@ class manifold(object):
           if package == 'signatory':
             cartesian_path_tensor = torch.tensor(np.array(cartesian_path))
             sig = signatory.signature(cartesian_path_tensor.unsqueeze(0), depth).squeeze(0)
-          else:
-            cartesian_path_incre = compute_increments(cartesian_path)
+          elif package == 'roughpy':
+            cartesian_path_incre = self.compute_increments(cartesian_path)
             stream = rp.LieIncrementStream.from_increments(cartesian_path_incre, indices=times, ctx=context)
             sig = stream.signature(interval)
           
@@ -470,7 +471,7 @@ class manifold(object):
         all_trunctensor_array = np.array(all_trunctensor)
         mean_trunctensor = np.mean(all_trunctensor_array, axis=0)
         mean_trunctensor_norm = np.linalg.norm(mean_trunctensor)
-        approx_dist = compute_approx(depth, mean_trunctensor_norm)
+        approx_dist = self.compute_approx(depth, mean_trunctensor_norm)
 
         # Store the results for analysis
         results[position_key][(depth, T)] = {
@@ -496,8 +497,8 @@ class manifold(object):
 
       approx_values = []
 
-      start_position_cart = np.array(spherical_to_cartesian(*start_position))
-      target_position_cart = np.array(spherical_to_cartesian(*target_position))
+      start_position_cart = np.array(self.spherical_to_cartesian(*start_position))
+      target_position_cart = np.array(self.spherical_to_cartesian(*target_position))
 
       start_position_str = np.array2string(start_position_cart, precision=2, separator=',', suppress_small=True)[1:-1]
       target_position_str = np.array2string(target_position_cart, precision=2, separator=',', suppress_small=True)[1:-1]
