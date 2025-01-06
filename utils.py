@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.linalg import expm 
 from mpl_toolkits.mplot3d import Axes3D
+import pandas as pd
 
 def get_sphere_surface(radius:float=1.0, color='lightblue', alpha=0.5, antialiased=True, plot=False)-> np.ndarray:
   phi, theta = np.mgrid[0.0:np.pi:100j, 0.0:2.0*np.pi:100j]
@@ -126,6 +127,7 @@ def compute_hyperbolic_pathdev(X:np.ndarray) -> np.ndarray:
   return np.stack(hyper_path, axis=1) # N,T,m,m
 
 def test_H2_pathdev(N:int=1, T:float=0.5, n_steps:int=100, rng=np.random.default_rng(1635134)):
+
   dt = T / n_steps
   increments = rng.normal(size=(N, n_steps, 2), scale=np.sqrt(dt))  # N, n_steps, 2
   trajectories_2d = np.cumsum(increments, axis=1)  # N, n_steps, 2
@@ -168,3 +170,120 @@ def test_H2_pathdev(N:int=1, T:float=0.5, n_steps:int=100, rng=np.random.default
   ax2.set_zlabel('x3')
   plt.tight_layout()
   plt.show()
+
+def compute_piecewise_normed_directions(cart_trajectories:np.ndarray)->np.ndarray:
+  """
+  cart_trajectories: N,nsteps+1,d
+  return: N,nsteps,d
+  """
+  N, nsteps_plus1, d = cart_trajectories.shape
+  piecewise_directions = cart_trajectories[:, 1:, :] - cart_trajectories[:, :-1, :]  # N, nsteps, d
+  piecewise_norms = np.linalg.norm(piecewise_directions, axis=2, keepdims=True)  # N, nsteps, 1
+  piecewise_normed_directions = piecewise_directions / piecewise_norms  # N, nsteps, d
+  return piecewise_normed_directions
+
+
+def compute_scaled_trajectories(cart_trajectories:np.ndarray, lam:float)->np.ndarray:
+  """
+  cart_trajectories: N,n_steps+1,d
+  lam: float
+
+  return: N,n_steps+1,d
+  """
+  piecewise_directions = cart_trajectories[:,1:,]-cart_trajectories[:,:-1,] # N,n_steps,d
+  scaled_trajectories = [cart_trajectories[:,0,:]] # [N,d]
+  for i in range(cart_trajectories.shape[1]-1):
+    newpoint = scaled_trajectories[-1] + lam*piecewise_directions[:,i] # N,d
+    scaled_trajectories.append(newpoint)
+  return np.stack(scaled_trajectories, axis=1) # N,n_steps+1,d
+
+
+def compute_scaled_hyperbolic_pathdev(cart_trajectories:np.ndarray, lam:float)->np.ndarray:
+  """
+  cart_trajectories: N,n_steps+1,d
+  lam: float
+
+  return: N,n_steps,d
+  """
+  scaled_trajectories = compute_scaled_trajectories(cart_trajectories, lam) # N,n_steps+1,d
+  scaled_hyperbolic_pathdev = compute_hyperbolic_pathdev(scaled_trajectories) # N,n_steps+1,m,m
+  return scaled_hyperbolic_pathdev # N,n_steps+1,m,m
+
+
+def test_if_on_hyperboloid(pathdev_in_hyperboloid:np.ndarray):
+  """
+  pathdev_in_hyperboloid: N,nsteps+1,m,1
+  """
+  points = pathdev_in_hyperboloid[..., 0]  # N, nsteps+1, m
+  hyperboloid_values = -points[..., -1]**2 + np.sum(points[..., :-1]**2, axis=-1)
+  print('hyperboloid_values', hyperboloid_values)
+  is_on_hyperboloid = np.isclose(hyperboloid_values, -1, atol=1e-1)
+  if np.all(is_on_hyperboloid):
+      print("All points lie on the H^3 hyperboloid.")
+  else:
+      print("Some points do not lie on the H^3 hyperboloid.")
+      print("Points not on hyperboloid:", points[~is_on_hyperboloid])
+
+
+def length_conj(cart_trajectories:np.ndarray, lam:float):
+  """
+  cart_trajectories: N,n_steps+1,d
+  lam: float
+  ----------------------------------
+  return
+
+  piecewise_length_of_trajectories: N,nsteps
+  length_of_trajectories: N,
+  """
+  N,nsteps_plus1,d = cart_trajectories.shape
+  peicewise_normed_directions = compute_piecewise_normed_directions(cart_trajectories) # N,nsteps,d
+  scaled_hyperbolic_pathdev = compute_scaled_hyperbolic_pathdev(cart_trajectories, lam) # N,n_steps+1,m,m
+
+  start_point = [0]*d + [1]
+  start_point = np.array(start_point).reshape(d+1,-1) # m,1
+  scaled_pathdev_in_hyperboloid = np.matmul(scaled_hyperbolic_pathdev, start_point) # N,nsteps+1,m,1
+
+  # test_if_on_hyperboloid(scaled_pathdev_in_hyperboloid)
+
+  piecewise_length_of_trajectories = [] # N,nsteps
+
+  for i in range(nsteps_plus1-1): # 0,...,nsteps-1
+    rho = np.arccosh(scaled_pathdev_in_hyperboloid[:,i+1,-1]) # N,1
+    etas = scaled_pathdev_in_hyperboloid[:, i + 1, :-1] / np.expand_dims(np.sinh(rho), axis=-1)  # N, m-1=d, 1
+    etas = etas.reshape(N,d)
+    normed_direction = peicewise_normed_directions[:,i] # N,d
+    piecewise_length = -(1/lam) * np.log(np.linalg.norm(etas-normed_direction, axis=1)) # N,
+    piecewise_length_of_trajectories.append(piecewise_length)
+
+  piecewise_lengths = np.stack(piecewise_length_of_trajectories, axis=1) # N,nsteps
+  total_lengths = np.sum(piecewise_length_of_trajectories, axis=1) # N,
+  final_step_lengths = piecewise_lengths[:,-1] # N,
+
+  return piecewise_lengths, total_lengths, final_step_lengths
+
+
+def test_length_conj(lam: float):
+  """
+  Validate the last_partition_length_conj function using 3D axis paths.
+  """
+  paths = np.array([[[0, 0, 0], [0.01, 0, 0], [0.01, 0.01, 0], [0.01, 0.01, 0.01],
+                      [0.01, 0.02, 0.01], [0.02, 0.02, 0.01], [0.02, 0.03, 0.01], [0.02, 0.03, 0.02],
+                      [0.03, 0.03, 0.02],[0.03, 0.03, 0.03], [0.03, 0.04, 0.03],[0.04, 0.04, 0.03]],
+                    [[0, 0, 0], [0.01, 0, 0], [0.01, 0.01, 0], [0.01, 0.01, 0.01],
+                      [0.01, 0.02, 0.01], [0.02, 0.02, 0.01], [0.02, 0.03, 0.01], [0.02, 0.03, 0.02],
+                      [0.03, 0.03, 0.02],[0.03, 0.03, 0.03], [0.03, 0.04, 0.03],[0.04, 0.04, 0.03]]]) # N,nsteps+1,d
+
+  piecewise_lengths, total_lengths, final_step_lengths = length_conj(paths, lam)
+  true_piecewise_lengths = np.linalg.norm(paths[:, 1:, :] - paths[:, :-1, :], axis=2)
+  true_total_lengths = np.sum(true_piecewise_lengths, axis=1)
+  true_final_step_lengths = true_piecewise_lengths[:, -1]
+
+  data = {
+      'Path Index': np.arange(paths.shape[0]),
+      'Conjectured Piecewise Lengths': list(piecewise_lengths),
+      'True Piecewise Lengths': list(true_piecewise_lengths),
+      'Conjectured Final Step Length': final_step_lengths,
+      'True Final Step Length': true_final_step_lengths
+  }
+  df = pd.DataFrame(data)
+  return df
