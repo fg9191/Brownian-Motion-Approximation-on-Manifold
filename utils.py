@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.linalg import expm 
 from mpl_toolkits.mplot3d import Axes3D
 import pandas as pd
+from IPython.display import display 
 
 def get_sphere_surface(radius:float=1.0, color='lightblue', alpha=0.5, antialiased=True, plot=False)-> np.ndarray:
   phi, theta = np.mgrid[0.0:np.pi:100j, 0.0:2.0*np.pi:100j]
@@ -225,65 +226,115 @@ def test_if_on_hyperboloid(pathdev_in_hyperboloid:np.ndarray):
       print("Points not on hyperboloid:", points[~is_on_hyperboloid])
 
 
-def length_conj(cart_trajectories:np.ndarray, lam:float):
+def length_conj(cart_trajectories:np.ndarray, lam:float)->np.array:
   """
+  applicable to any path in C^2.
+  for experiment with linear piecewise embedding, the true length is regarded as sum of each linear piece
+  ----------------------------------
+  Parameters
+
   cart_trajectories: N,n_steps+1,d
   lam: float
   ----------------------------------
-  return
+  Return
 
-  piecewise_length_of_trajectories: N,nsteps
   length_of_trajectories: N,
   """
-  N,nsteps_plus1,d = cart_trajectories.shape
-  peicewise_normed_directions = compute_piecewise_normed_directions(cart_trajectories) # N,nsteps,d
+  N,nsteps_plus1,d = cart_trajectories.shape 
   scaled_hyperbolic_pathdev = compute_scaled_hyperbolic_pathdev(cart_trajectories, lam) # N,n_steps+1,m,m
+  last_element = scaled_hyperbolic_pathdev[:,-1,-1,-1].reshape(-1,1) # N,1
+  rho_final = np.arccosh(last_element) # N,1
+  conjectured_lengths = rho_final/lam # N,1
 
-  start_point = [0]*d + [1]
-  start_point = np.array(start_point).reshape(d+1,-1) # m,1
-  scaled_pathdev_in_hyperboloid = np.matmul(scaled_hyperbolic_pathdev, start_point) # N,nsteps+1,m,1
-
-  # test_if_on_hyperboloid(scaled_pathdev_in_hyperboloid)
-
-  piecewise_length_of_trajectories = [] # N,nsteps
-
-  for i in range(nsteps_plus1-1): # 0,...,nsteps-1
-    rho = np.arccosh(scaled_pathdev_in_hyperboloid[:,i+1,-1]) # N,1
-    etas = scaled_pathdev_in_hyperboloid[:, i + 1, :-1] / np.expand_dims(np.sinh(rho), axis=-1)  # N, m-1=d, 1
-    etas = etas.reshape(N,d)
-    normed_direction = peicewise_normed_directions[:,i] # N,d
-    piecewise_length = -(1/lam) * np.log(np.linalg.norm(etas-normed_direction, axis=1)) # N,
-    piecewise_length_of_trajectories.append(piecewise_length)
-
-  piecewise_lengths = np.stack(piecewise_length_of_trajectories, axis=1) # N,nsteps
-  total_lengths = np.sum(piecewise_length_of_trajectories, axis=1) # N,
-  final_step_lengths = piecewise_lengths[:,-1] # N,
-
-  return piecewise_lengths, total_lengths, final_step_lengths
+  return conjectured_lengths # N,1
 
 
-def test_length_conj(lam: float):
+def test_length_conj(lam_list:list, n_paths:int=10, rng=np.random.default_rng(1635134),
+                     display_df=True, plot_results=True):
   """
-  Validate the last_partition_length_conj function using 3D axis paths.
+  Validate the length_conj function using randomly generated 3d piecewise linear paths.
+
+  ----------------------------------------------------------------
+  Parameter:
+
+  n_paths: number of paths to be generated
+  lam_list: a list of amplification factor values to be applied to each path
+
+  ----------------------------------------------------------------
+  Return:
+
+  results_dict: dictionary
+  results_df: pd.DataFrame
   """
-  paths = np.array([[[0, 0, 0], [0.01, 0, 0], [0.01, 0.01, 0], [0.01, 0.01, 0.01],
-                      [0.01, 0.02, 0.01], [0.02, 0.02, 0.01], [0.02, 0.03, 0.01], [0.02, 0.03, 0.02],
-                      [0.03, 0.03, 0.02],[0.03, 0.03, 0.03], [0.03, 0.04, 0.03],[0.04, 0.04, 0.03]],
-                    [[0, 0, 0], [0.01, 0, 0], [0.01, 0.01, 0], [0.01, 0.01, 0.01],
-                      [0.01, 0.02, 0.01], [0.02, 0.02, 0.01], [0.02, 0.03, 0.01], [0.02, 0.03, 0.02],
-                      [0.03, 0.03, 0.02],[0.03, 0.03, 0.03], [0.03, 0.04, 0.03],[0.04, 0.04, 0.03]]]) # N,nsteps+1,d
+  # randomly generate 3d piecewise linear paths
+  T = 10
+  random_uni_samples = rng.uniform(low=0., high=1., size=(n_paths, T, 3)) # [N, T, 3]
+  paths = np.cumsum(random_uni_samples, axis=1) # [N, T, 3]
+  initial_position = np.zeros((n_paths, 1, 3))
+  paths = np.concatenate((initial_position, paths), axis=1) # [N, T+1, 3]
+  
+  results_dict = {}
+  results_df = []
 
-  piecewise_lengths, total_lengths, final_step_lengths = length_conj(paths, lam)
-  true_piecewise_lengths = np.linalg.norm(paths[:, 1:, :] - paths[:, :-1, :], axis=2)
-  true_total_lengths = np.sum(true_piecewise_lengths, axis=1)
-  true_final_step_lengths = true_piecewise_lengths[:, -1]
+  for lam in lam_list:
+    conjectured_lengths = length_conj(paths, lam) # N, 1
+    true_piecewise_lengths = np.linalg.norm(paths[:, 1:, :] - paths[:, :-1, :], axis=2) # N, T
+    true_lengths = np.sum(true_piecewise_lengths, axis=1).reshape(-1, 1) # N, 1
+    relative_errors = np.abs(conjectured_lengths - true_lengths)*100/true_lengths # N, 1
 
-  data = {
-      'Path Index': np.arange(paths.shape[0]),
-      'Conjectured Piecewise Lengths': list(piecewise_lengths),
-      'True Piecewise Lengths': list(true_piecewise_lengths),
-      'Conjectured Final Step Length': final_step_lengths,
-      'True Final Step Length': true_final_step_lengths
-  }
-  df = pd.DataFrame(data)
-  return df
+    results_dict[lam] = {
+        'Path Indices': np.arange(paths.shape[0]), 
+        'Conjectured Lengths': conjectured_lengths, # N, 1
+        'True Lengths': true_lengths, # N, 1
+        'Relative Errors': relative_errors # N, 1
+    }
+
+    for i in range(paths.shape[0]):
+      results_df.append({
+          'lam': lam,
+          'Path Index': i,
+          'Conjectured Length': conjectured_lengths[i, 0], # scalar
+          'True Length': true_lengths[i, 0], # scalar
+          'Relative Error': relative_errors[i, 0], # scalar
+      })
+
+  results_df = pd.DataFrame(results_df)
+  
+  if display_df:
+    display(display_df)
+  
+  if plot_results:
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3))
+    
+    # Plot True Length vs Conjectured Length
+    for lam in lam_list:
+      ax1.scatter(results_dict[lam]['True Lengths'], results_dict[lam]['Conjectured Lengths'], label=f'λ={lam}',s=10)
+    ax1.plot([min(results_df['True Length']), max(results_df['True Length'])], [min(results_df['True Length']), max(results_df['True Length'])], 'r--')
+    ax1.set_xlabel('True Length')
+    ax1.set_ylabel('Conjectured Length')
+    ax1.set_title('True vs Conjectured Length')
+    ax1.legend()
+    
+    # Plot Relative Error vs Lambda with color gradient for True Length
+    all_lams = []
+    all_relative_errors = []
+    all_true_lengths = []
+    for lam in lam_list:
+      all_lams.extend([lam] * len(results_dict[lam]['Relative Errors']))
+      all_relative_errors.extend(results_dict[lam]['Relative Errors'])
+      all_true_lengths.extend(results_dict[lam]['True Lengths'])
+    
+    sc = ax2.scatter(all_lams, all_relative_errors, c=all_true_lengths, cmap='viridis', marker='o', s=10)
+    ax2.set_xlabel('Lambda')
+    ax2.set_ylabel('Relative Error (%)')
+    ax2.set_title('Relative Error vs Lambda')
+    plt.colorbar(sc, ax=ax2, label='True Length')
+    
+    plt.tight_layout()
+    plt.show()
+  
+  return results_dict, results_df
+
+
+
+

@@ -165,6 +165,39 @@ class manifold(object):
     return start_positions, target_positions
 
 
+  def generate_random_start_target_pairs_with_fixed_length(self, fixed_lengths_list:list, nsamples_per_pair:int=1, rng=np.random.default_rng(12345))->tuple:
+    start_positions = []
+    target_positions = []
+    
+    for fixed_length in fixed_lengths_list:
+      for _ in range(nsamples_per_pair):
+        # randomly generate a start point on the sphere
+        theta_start = rng.uniform(0, 2 * np.pi)
+        phi_start = rng.uniform(0, np.pi)
+        start_position = np.array([theta_start, phi_start, self.radius_sphere])
+        start_positions.append(start_position)
+
+        # convert start position to Cartesian coordinates
+        start_cartesian = self.spherical_to_cartesian(*start_position)
+
+        # generate a random vector in the tangent plane at the start position
+        tangent_vector = rng.normal(size=3)
+        tangent_vector -= tangent_vector.dot(start_cartesian) * start_cartesian / np.linalg.norm(start_cartesian)**2
+        tangent_vector = tangent_vector / np.linalg.norm(tangent_vector)
+
+        # generate the axis for rotation, which is orthogonal to both start_cartesian and tangent_vector
+        axis = np.cross(start_cartesian, tangent_vector)
+        axis = axis / np.linalg.norm(axis)
+        angle = fixed_length / self.radius_sphere
+
+        # rotate the start position to get the target position
+        target_cartesian = self.rodrigues_rotation(start_cartesian, axis, angle)
+        target_position = self.cartesian_to_spherical(*target_cartesian)
+        target_positions.append(target_position)
+
+    return start_positions, target_positions
+
+
   @staticmethod
   def plot_BB_last_step_hist(distances:list, T:float):
     plt.figure(figsize=(6,4))
@@ -370,6 +403,7 @@ class manifold(object):
         cart_trajs_all.append(cart_traj)
     return np.array(cart_trajs_all)
 
+
   def plot_BB_path(self, trajectories:np.array, T:float=0.05, 
                    target_position=np.array([0, np.pi/2, 1.0]), label=False):
     start_position = np.array(self.spherical_to_cartesian(*trajectories[0,0]))
@@ -407,20 +441,20 @@ class manifold(object):
     ax.legend(loc='best')
     plt.show()
 
-
   @staticmethod
   def get_hyperbolic_pathdev(trajectories:np.ndarray)-> np.ndarray:
     hyperbolic_pathdev = compute_hyperbolic_pathdev(trajectories) # N,n_steps,m,m where m=d+1
     # print(hyperbolic_pathdev.shape)
 
-  def explore_sensitivity(self, depth_range:list, start_target_pairs:tuple,
+
+  def explore_PathRecovery_ExpSig_sensitivity(self, depth_range:list, start_target_pairs:tuple,
                           n_steps=10, n_samples_per_depth=10, n_samples_per_depth_stored=1,
                           rng=np.random.default_rng(1635134), package='roughpy')->tuple:
     """
     explore sensitivity to parameter variations: start-target positions pairs and depths (T)
     """
     results_dict = {}
-    results_df_list = []
+    results_df = []
     start_positions, target_positions = start_target_pairs[0], start_target_pairs[1]
     for start_position, target_position in zip(start_positions, target_positions):
       if not self.is_on_sphere(start_position):
@@ -478,26 +512,36 @@ class manifold(object):
           "all_trajectories": np.array(all_trajectories),
           "sample_trajectories": np.array(sample_trajectories),
           "approx_distance": approx_dist,
-          "true_distance": start_targ_distance
+          "true_distance": start_targ_distance,
+          "relative_error": np.abs(approx_dist-start_targ_distance)*100/start_targ_distance
         }
-        results_df_list.append(pd.DataFrame([{
-            'Start Position': start_position,
-            'Target Position': target_position,
-            'Depth': depth,
-            'T': T,
-            'Approx Distance': approx_dist,
-            'True Distance': start_targ_distance
-        }]))
-    results_df = pd.concat(results_df_list, ignore_index=True)
+        results_df.append({
+          'Start Position': start_position,
+          'Target Position': target_position,
+          'Depth': depth,
+          'T': T,
+          'Approx Length': approx_dist,
+          'True Length': start_targ_distance,
+          'Relative Error:': np.abs(approx_dist-start_targ_distance)*100/start_targ_distance,
+        })
+
+    results_df = pd.DataFrame(results_df)
     return results_dict, results_df
 
 
-  def plot_sensitivity_results(self, results_tuple:tuple, plot_paths=True, plot_last_step_hist=True, plot_approx_geoconstants=True, display_df=True):
+  def plot_PathRecovery_ExpSig_sensitivity_results(self, results_tuple:tuple, 
+                                                   plot_paths=False, plot_last_step_hist=False, plot_conj_length_per_position=False, 
+                                                   plot_relative_error=True, display_df=True):
     results_dict, results_df = results_tuple
     if display_df:
       display(results_df)
 
     # iterate over the start-target position combinations in the results dictionary
+    all_depths = []
+    all_relative_errors = []
+    all_true_lengths = []
+    all_conjectured_lengths = []
+
     for (start_position, target_position), depth_T_dict in results_dict.items():
       start_position_cart = np.array(self.spherical_to_cartesian(*start_position))
       target_position_cart = np.array(self.spherical_to_cartesian(*target_position))
@@ -510,7 +554,7 @@ class manifold(object):
         ax1.plot_surface(self.sphere_surface[0], self.sphere_surface[1], self.sphere_surface[2],
                          rstride=1, cstride=1, linewidth=0, color='b', alpha=0.04, antialiased=True)
         start_marker = ax1.scatter(start_position_cart[0], start_position_cart[1], start_position_cart[2], color='r', s=50, label='Start Position')
-        target_marker = ax1.scatter(target_position_cart[0], target_position_cart[1], target_position_cart[2], color='black', s=50, label='Target Position')       
+        target_marker = ax1.scatter(target_position_cart[0], target_position_cart[1], target_position_cart[2], color='black', s=50, label='Target Position')
         all_lines = []
         all_labels = []
 
@@ -522,16 +566,19 @@ class manifold(object):
 
       # iterate over depths and T's in the results for the current start-target pair
       conjectured_lengths_tuples = []
-      geoconstants_tuples = []
       all_distances = []
       for idx, ((depth, T), data) in enumerate(depth_T_dict.items()):
         sample_trajectories = data["sample_trajectories"]
         approx_dist = data["approx_distance"]
         true_dist = data["true_distance"]
+        relative_error = data["relative_error"]
         conjectured_lengths_tuples.append((depth, T, approx_dist)) # store the approx values for this depth and T for later plotting
-        error_times_depth = abs(approx_dist - true_dist) * depth
-        geoconstants_tuples.append((depth, T, error_times_depth))
 
+        all_depths.append(depth)
+        all_relative_errors.append(relative_error)
+        all_true_lengths.append(true_dist)
+        all_conjectured_lengths.append(approx_dist)
+        
         if plot_paths:
           for i in range(sample_trajectories.shape[0]):
             trajectory = sample_trajectories[i]
@@ -574,46 +621,10 @@ class manifold(object):
       depths = [val[0] for val in conjectured_lengths_tuples_sorted]
       conjectured_lengths = [val[2] for val in conjectured_lengths_tuples_sorted]
       T_s = [val[1] for val in conjectured_lengths_tuples_sorted]
-      
-      if plot_approx_geoconstants:
-        geoconstants_tuples_sorted = sorted(geoconstants_tuples, key=lambda x: x[0])  # sort by depth
-        geoconstants = [val[2] for val in geoconstants_tuples_sorted]
 
-        fig3, ax3_1 = plt.subplots(figsize=(6, 4))
-        ax3_2 = ax3_1.twinx()
-
-        ax3_1.plot(depths, conjectured_lengths, label='Conjectured Length', marker='o', linestyle='-')
-        ax3_1.axhline(y=true_dist, color='r', linestyle='--', label=f'True Length = {true_dist:.5f}')
-        ax3_2.plot(depths, geoconstants, label='|Conjectured Length-True Length|*Depth', marker='^', linestyle='-', color='orange')
-
-        for i, (depth, conjectured_length, geoconstant) in enumerate(zip(depths, conjectured_lengths, geoconstants)):
-          ax3_1.annotate(f'{conjectured_length:.4f}',
-                        (depths[i], conjectured_lengths[i]),
-                        textcoords="offset points",
-                        xytext=(0, 5),
-                        ha='center',
-                        fontsize=8)
-          ax3_2.annotate(f'{geoconstant:.4f}',
-                        (depths[i], geoconstants[i]),
-                        textcoords="offset points",
-                        xytext=(0, 5),
-                        ha='center',
-                        fontsize=8)
-        ax3_1.set_xlabel('Depth')
-        ax3_1.set_ylabel('Conjectured Length')
-        ax3_2.set_ylabel('|Conjectured Length-True Length|*Depth')
-        ax3_1.set_title(f'Plot of Conjectured Length and |Conjectured Length-True Length|*Depth vs Depth from Start: ({start_position_str}) to Target: ({target_position_str})')
-        
-        lines_1, labels_1 = ax3_1.get_legend_handles_labels()
-        lines_2, labels_2 = ax3_2.get_legend_handles_labels()
-        fig3.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
-        
-        plt.tight_layout()
-        plt.show()
-
-      else:
+      if plot_conj_length_per_position:
         # plot Conjectured Length against depth
-        fig3, ax3 = plt.subplots(figsize=(6, 4))
+        fig3, ax3 = plt.subplots(figsize=(6, 3))
         ax3.plot(depths, conjectured_lengths, label='Conjectured Length', marker='o', linestyle='-')
         ax3.axhline(y=true_dist, color='r', linestyle='--', label=f'True Length = {true_dist:.5f}')
         for i, (depth, approx_val) in enumerate(zip(depths, conjectured_lengths)): # annotation
@@ -630,10 +641,33 @@ class manifold(object):
         plt.tight_layout()
         plt.show()
 
+    if plot_relative_error:
+      fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 6))
+      
+      # Plot Conjectured Length vs True Length
+      for depth in set(all_depths):
+        indices = [i for i, x in enumerate(all_depths) if x == depth]
+        ax1.scatter([all_true_lengths[i] for i in indices], [all_conjectured_lengths[i] for i in indices], label=f'Depth={depth}', s=10)
+      ax1.plot([min(all_true_lengths), max(all_true_lengths)], [min(all_true_lengths), max(all_true_lengths)], 'r--')
+      ax1.set_xlabel('True Length')
+      ax1.set_ylabel('Conjectured Length')
+      ax1.set_title('True vs Conjectured Length')
+      ax1.legend()
+      
+      # Plot Relative Error vs Depth with color gradient for True Length
+      sc = ax2.scatter(all_depths, all_relative_errors, c=all_true_lengths, cmap='viridis', marker='o', s=10)
+      ax2.set_xlabel('Depth')
+      ax2.set_ylabel('Relative Error (%)')
+      ax2.set_title('Relative Error vs Depth')
+      plt.colorbar(sc, ax=ax2, label='True Length')
+      
+      plt.tight_layout()
+      plt.show()
 
-  def explore_sensitivity_last_partition(self, lam_range:list, T_range:float, start_target_pairs:tuple, n_samples:float=10, rng=np.random.default_rng(1635134)):
+
+  def explore_PathRecovery_PathDev_sensitivity(self, lam_list:list, T_list:float, n_steps:int, start_target_pairs:tuple, n_samples:float=10, rng=np.random.default_rng(1635134)):
     results_dict = {}
-    results_df = []
+    results_df= []
     start_positions, target_positions = start_target_pairs[0], start_target_pairs[1]
 
     for start_position, target_position in zip(start_positions, target_positions):
@@ -652,59 +686,66 @@ class manifold(object):
       position_key = (tuple(start_position), tuple(target_position))
       results_dict[position_key] = {}
 
-      for T in T_range:
-        results_dict[position_key][T] = {}
-        for lam in lam_range:
-          cart_trajectories = self.generate_multiple_BB_on_2sphere(T, lam, start_position, target_position, n_samples, rng) # N,nsteps+1,d
-          piecewise_lengths, total_lengths, final_step_lengths = length_conj(cart_trajectories, lam)
-          true_piecewise_lengths = np.linalg.norm(cart_trajectories[:, 1:, :] - cart_trajectories[:, :-1, :], axis=2)
-          true_final_step_lengths = true_piecewise_lengths[:, -1]
+      for T in T_list:
+        cart_trajectories = self.generate_multiple_BB_on_2sphere(T, n_steps, start_position, target_position, n_samples, rng) # N,nsteps+1,d
+        true_piecewise_lengths = np.linalg.norm(cart_trajectories[:, 1:, :] - cart_trajectories[:, :-1, :], axis=2) # N,T
+        true_lengths = np.sum(true_piecewise_lengths, axis=1).reshape(-1,1) # N,1
 
-          data = {
-                'Path Index': np.arange(cart_trajectories.shape[0]),
-                'Conjectured Piecewise Lengths': list(piecewise_lengths),
-                'True Piecewise Lengths': list(true_piecewise_lengths),
-                'Conjectured Final Step Length': final_step_lengths,
-                'True Final Step Length': true_final_step_lengths,
-                'True Total Length': start_targ_distance,
-                'Conjectured Total Length (λ*conj_final_step_len)': lam * final_step_lengths,
-                'sample_trajectories': cart_trajectories
-            }
-          results_dict[position_key][T][lam] = data
+        results_dict[position_key][T]={
+            'Path Indices': np.arange(cart_trajectories.shape[0]),
+            'Sample Trajectories': cart_trajectories, # N,nsteps+1,d
+        }
+
+        for lam in lam_list:
+          conjectured_lengths = length_conj(cart_trajectories, lam) # N,1
+          relative_errors = np.abs(conjectured_lengths-true_lengths)*100/true_lengths # N,1
+
+          results_dict[position_key][T][lam] = {              
+              'Conjectured Lengths': conjectured_lengths,  # N,1
+              'True Lengths': true_lengths, # N,1
+              'Relative Errors': relative_errors # N,1
+          }
+
           for i in range(cart_trajectories.shape[0]):
             results_df.append({
-                'Start Position': start_position,
-                'Target Position': target_position,
-                'T': T,
-                'Lambda': lam,
-                'Path Index': i,
-                'Conjectured Piecewise Lengths': piecewise_lengths[i],
-                'True Piecewise Lengths': true_piecewise_lengths[i],
-                'Conjectured Final Step Length': final_step_lengths[i],
-                'True Final Step Length': true_final_step_lengths[i],
-                'True Total Length': start_targ_distance,
-                'Conjectured Total Length (λ*conj_final_step_len)': lam * final_step_lengths[i]
+              'Start Position': start_position,
+              'Target Position': target_position,
+              'T': T,
+              'Lambda': lam,
+              'Path Index': i,
+              'Conjectured Length': conjectured_lengths[i,0], # scalar
+              'True Length': true_lengths[i,0], # scalar
+              'Relative Error': relative_errors[i, 0], # scalar
             })
 
     results_df = pd.DataFrame(results_df)
     return results_dict, results_df
 
-  def plot_sensitivity_last_partition(self, results_tuple:tuple, plot_paths=True, display_df=True):
+
+  def plot_PathRecovery_PathDev_sensitivity_results(self, results_tuple:tuple, 
+                                                    plot_paths=False, plot_conj_length_per_position=False, 
+                                                    plot_relative_error=True, display_df=True):
     results_dict, results_df = results_tuple
+
     if display_df:
       display(results_df)
 
-    if plot_paths: 
-      for (start_position, target_position), T_dict in results_dict.items():    
+    all_lams = []
+    all_relative_errors = []
+    all_true_lengths = []
+    all_conjectured_lengths = []
+
+    for (start_position, target_position), T_dict in results_dict.items():
+      start_position_cart = np.array(self.spherical_to_cartesian(*start_position))
+      target_position_cart = np.array(self.spherical_to_cartesian(*target_position))
+      start_position_str = np.array2string(start_position_cart, precision=2, separator=',', suppress_small=True)[1:-1]
+      target_position_str = np.array2string(target_position_cart, precision=2, separator=',', suppress_small=True)[1:-1] 
+
+      if plot_paths:
         fig = plt.figure(figsize=(12, 6))
         ax = fig.add_subplot(111, projection='3d')
-        ax.plot_surface(self.sphere_surface[0], self.sphere_surface[1], self.sphere_surface[2], 
-                        rstride=1, cstride=1, linewidth=0, color='b', alpha=0.05, antialiased=True)   
-        
-        start_position_cart = np.array(self.spherical_to_cartesian(*start_position))
-        target_position_cart = np.array(self.spherical_to_cartesian(*target_position))
-        start_position_str = np.array2string(start_position_cart, precision=2, separator=',', suppress_small=True)[1:-1]
-        target_position_str = np.array2string(target_position_cart, precision=2, separator=',', suppress_small=True)[1:-1]
+        ax.plot_surface(self.sphere_surface[0], self.sphere_surface[1], self.sphere_surface[2],
+                        rstride=1, cstride=1, linewidth=0, color='b', alpha=0.05, antialiased=True)
 
         start_marker = ax.scatter(start_position_cart[0], start_position_cart[1], start_position_cart[2], color='r', s=50, label='Start Position')
         target_marker = ax.scatter(target_position_cart[0], target_position_cart[1], target_position_cart[2], color='black', s=50, label='Target Position')
@@ -713,76 +754,82 @@ class manifold(object):
         all_labels = []
 
         for T, lam_dict in T_dict.items():
-          for lam, data in lam_dict.items():
-            sample_trajectories = data['sample_trajectories']
-            for i in range(sample_trajectories.shape[0]):
-              trajectory = sample_trajectories[i]
-              x_coords = trajectory[:,0]
-              y_coords = trajectory[:,1]
-              z_coords = trajectory[:,2]
-              lines = ax.plot(x_coords, y_coords, z_coords, label=f'T={T:.2e}, nsteps={lam}, Sample {i+1}', linewidth=0.7)
-              all_lines.append(lines[0])
-              all_labels.append(f'T={T:.2e}, nsteps={trajectory.shape[0]}, Sample {i+1}')
-        
+          sample_trajectories = T_dict[T]['Sample Trajectories']
+          for i in range(sample_trajectories.shape[0]):
+            trajectory = sample_trajectories[i]
+            x_coords = trajectory[:,0]
+            y_coords = trajectory[:,1]
+            z_coords = trajectory[:,2]
+            lines = ax.plot(x_coords, y_coords, z_coords, label=f'T={T:.2e}, nsteps={trajectory.shape[0]}, Sample {i+1}', linewidth=0.7)
+            all_lines.append(lines[0])
+            all_labels.append(f'T={T:.2e}, nsteps={trajectory.shape[0]}, Sample {i+1}')
+
         all_lines.extend([start_marker, target_marker])
         all_labels.extend(['Start Position', 'Target Position'])
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_zlabel('Z')
         fig.suptitle(f'Sample Paths with varing T\'s and nstep\'s from Start: ({start_position_str}) to Target: ({target_position_str})')
-        fig.legend(all_lines, all_labels, loc='upper right', fontsize='small')
+        fig.legend(all_lines, all_labels, loc='right', fontsize='small')
+        # ax.set_title(f'Sample Paths with varing T\'s and nstep\'s from Start: ({start_position_str}) to Target: ({target_position_str})')
+        # ax.legend(loc='upper right', fontsize='small')
         plt.tight_layout()
         plt.show()
-
-        # Plot Conjectured Total Step Length vs lam and True Total Step Length
-        fig, ax = plt.subplots(figsize=(8, 6))
-        for T, lam_dict in T_dict.items():
+       
+      # plot Conjectured Total Step Length vs lam and True Total Step Length
+      if plot_conj_length_per_position:
+        fig, ax = plt.subplots(figsize=(6,3))
+        for T, T_data in T_dict.items():
           lams = []
-          conj_total_step_lengths = []
-          for lam, data in lam_dict.items():
+          conj_lengths_mean = []
+          for lam, data in T_data.items():
+            if lam == 'Path Indices' or lam == 'Sample Trajectories':
+              continue
             lams.append(lam)
-            conj_total_step_lengths.append(np.mean(data['Conjectured Total Length (λ*conj_final_step_len)']))
-          ax.plot(lams, conj_total_step_lengths, marker='o', linestyle='-', label=f'T={T:.2e}')
-          for i, (lam, length) in enumerate(zip(lams, conj_total_step_lengths)):
+            conj_lengths_mean.append(np.mean(data['Conjectured Lengths']))
+          ax.plot(lams, conj_lengths_mean, marker='o', linestyle='-', label=f'T={T:.2e}')
+          for i, (lam, length) in enumerate(zip(lams, conj_lengths_mean)):
             ax.annotate(f'{length:.4f}', (lam, length), textcoords="offset points", xytext=(0, 5), ha='center', fontsize=8)
-        ax.axhline(y=np.mean(data['True Total Length']), color='r', linestyle='--', label='True Total Step Length')
+        true_length = data['True Length']
+        ax.axhline(y=true_length, color='r', linestyle='--', label=f'True Length={true_length:.4f}')
         ax.set_xlabel('Amplification factor')
-        ax.set_ylabel('Conjectured Total Step Length')
-        ax.set_title(f'Conjectured Total Step Length vs Amplification factor from Start: ({start_position_str}) to Target: ({target_position_str})')
+        ax.set_ylabel('Conjectured Length')
+        ax.set_title(f'Conjectured Length vs Amplification factor from Start: ({start_position_str}) to Target: ({target_position_str})')
         ax.legend()
         plt.tight_layout()
         plt.show()
 
-  def generate_random_start_target_pairs_with_fixed_length(self, fixed_lengths_list:list, nsamples_per_pair:int=1, rng=np.random.default_rng(12345))->tuple:
-    start_positions = []
-    target_positions = []
-    
-    for fixed_length in fixed_lengths_list:
-      for _ in range(nsamples_per_pair):
-        # randomly generate a start point on the sphere
-        theta_start = rng.uniform(0, 2 * np.pi)
-        phi_start = rng.uniform(0, np.pi)
-        start_position = np.array([theta_start, phi_start, self.radius_sphere])
-        start_positions.append(start_position)
+      if plot_relative_error:
+        for T, path_lam_dict in T_dict.items():
+          for lam, data in path_lam_dict.items():
+            if lam == 'Path Indices' or lam == 'Sample Trajectories':
+              continue
+            all_lams.extend([lam] * len(data['Relative Errors']))
+            all_relative_errors.extend(data['Relative Errors'])
+            all_true_lengths.extend(data['True Lengths'])
+            all_conjectured_lengths.extend(data['Conjectured Lengths'])
 
-        # convert start position to Cartesian coordinates
-        start_cartesian = self.spherical_to_cartesian(*start_position)
-
-        # generate a random vector in the tangent plane at the start position
-        tangent_vector = rng.normal(size=3)
-        tangent_vector -= tangent_vector.dot(start_cartesian) * start_cartesian / np.linalg.norm(start_cartesian)**2
-        tangent_vector = tangent_vector / np.linalg.norm(tangent_vector)
-
-        # generate the axis for rotation, which is orthogonal to both start_cartesian and tangent_vector
-        axis = np.cross(start_cartesian, tangent_vector)
-        axis = axis / np.linalg.norm(axis)
-        angle = fixed_length / self.radius_sphere
-
-        # rotate the start position to get the target position
-        target_cartesian = self.rodrigues_rotation(start_cartesian, axis, angle)
-        target_position = self.cartesian_to_spherical(*target_cartesian)
-        target_positions.append(target_position)
-
-    return start_positions, target_positions
-
+    # plot Conjectured Length vs True Length and Relative Error vs Lambda
+    if plot_relative_error:
+      fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 6))
+      
+      # Plot Conjectured Length vs True Length
+      for lam in set(all_lams):
+        indices = [i for i, x in enumerate(all_lams) if x == lam]
+        ax1.scatter([all_true_lengths[i] for i in indices], [all_conjectured_lengths[i] for i in indices], label=f'λ={lam}', s=10)
+      ax1.plot([min(all_true_lengths), max(all_true_lengths)], [min(all_true_lengths), max(all_true_lengths)], 'r--')
+      ax1.set_xlabel('True Length')
+      ax1.set_ylabel('Conjectured Length')
+      ax1.set_title('True vs Conjectured Length')
+      ax1.legend()
+      
+      # Plot Relative Error vs Lambda with color gradient for True Length
+      sc = ax2.scatter(all_lams, all_relative_errors, c=all_true_lengths, cmap='viridis', marker='o', s=10)
+      ax2.set_xlabel('Lambda')
+      ax2.set_ylabel('Relative Error (%)')
+      ax2.set_title('Relative Error vs Lambda')
+      plt.colorbar(sc, ax=ax2, label='True Length')
+      
+      plt.tight_layout()
+      plt.show()
 
